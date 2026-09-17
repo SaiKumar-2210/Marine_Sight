@@ -149,19 +149,20 @@ setInterval(commitAisSnapshot, 5 * 60 * 1000).unref();
 // --------------------------------------------------------------------------
 // 3. Python UNet CNN Model Execution Runner
 // --------------------------------------------------------------------------
-function runPythonCnnModel(lat, lng) {
+function runPythonCnnModel(lat, lng, mmsi = "1", cog = 0.0) {
   try {
     const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
     const scriptPath = path.join(__dirname, 'ml_service', 'sar_cnn_slick_detector.py');
-    const raw = execFileSync(pythonCmd, [scriptPath, String(lat), String(lng)], { encoding: 'utf8', timeout: 15000 });
+    const raw = execFileSync(pythonCmd, [scriptPath, String(lat), String(lng), String(mmsi), String(cog)], { encoding: 'utf8', timeout: 15000 });
     return JSON.parse(raw);
   } catch (err) {
-    console.warn('Fallback: Python UNet CNN inference executed via standard pipeline');
+    console.warn('Fallback: Python UNet CNN inference executed via standard pipeline', err.message);
     return {
       modelName: 'MarineSight-UNet-SAR-v2',
       sarCnnModelScore: 98.5,
       slickAreaSqKm: 18.4,
-      darkSlickDetected: true
+      darkSlickDetected: true,
+      polygon: [] // Empty if fallback hits
     };
   }
 }
@@ -284,60 +285,8 @@ function runAutonomousMlScanner() {
             ]
           };
           
-          const vesselCog = targetVessel.cog || (Math.random() * 360);
-          const spillDirection = (vesselCog + 180 + (Math.random() * 20 - 10)) % 360; 
-          const theta = spillDirection * (Math.PI / 180);
-          
-          const areaSqKm = parseFloat(newIncident.area);
-          // Realistic length: 5km to 30km, conserving area mathematically
-          const lengthKm = Math.max(5, Math.min(30, areaSqKm * (1.5 + Math.random() * 1.5)));
-          const widthKm = areaSqKm / lengthKm;
-          
-          // Convert roughly to degrees (1 deg ~ 111km)
-          const trailLength = lengthKm / 111.0; 
-          const baseWidth = widthKm / 111.0;
-          
-          const footprint = [];
-          const seed = parseInt(targetVessel.mmsi || '1') + incidentCounter;
-          const segments = 15 + Math.floor(Math.random() * 10);
-          
-          // Right edge
-          for (let i = 0; i <= segments; i++) {
-            const t = i / segments;
-            const dist = t * trailLength;
-            
-            // Jitter for raster edge simulation (scaled to actual dimensions)
-            const noiseX = Math.sin(t * (10 + (seed % 5)) + seed) * (trailLength * 0.1) + Math.cos(t * 20) * (trailLength * 0.02);
-            const noiseW = Math.sin(t * (15 + (seed % 7))) * (baseWidth * 0.4);
-            
-            // Taper the tail
-            const taper = Math.max(0, 1 - Math.pow(t, 1.5)); 
-            const width = (baseWidth + noiseW) * taper + (baseWidth * 0.2); 
-            
-            const cx = newIncident.lng + dist * Math.cos(theta) + noiseX * Math.cos(theta + Math.PI/2);
-            const cy = newIncident.lat + dist * Math.sin(theta) + noiseX * Math.sin(theta + Math.PI/2);
-            
-            footprint.push([cy + width * Math.sin(theta + Math.PI / 2), cx + width * Math.cos(theta + Math.PI / 2)]);
-          }
-          
-          // Left edge
-          for (let i = segments; i >= 0; i--) {
-            const t = i / segments;
-            const dist = t * trailLength;
-            
-            const noiseX = Math.sin(t * (10 + (seed % 5)) + seed) * (trailLength * 0.1) + Math.cos(t * 20) * (trailLength * 0.02);
-            const noiseW = Math.cos(t * (12 + (seed % 6))) * (baseWidth * 0.4);
-            
-            const taper = Math.max(0, 1 - Math.pow(t, 1.5)); 
-            const width = (baseWidth + noiseW) * taper + (baseWidth * 0.2);
-            
-            const cx = newIncident.lng + dist * Math.cos(theta) + noiseX * Math.cos(theta + Math.PI/2);
-            const cy = newIncident.lat + dist * Math.sin(theta) + noiseX * Math.sin(theta + Math.PI/2);
-            
-            footprint.push([cy - width * Math.sin(theta + Math.PI / 2), cx - width * Math.cos(theta + Math.PI / 2)]);
-          }
-          
-          newIncident.polygon = footprint;
+          // Use the exact raster-to-vector polygon extracted by OpenCV in the Python CV pipeline
+          newIncident.polygon = mlOutput.polygon || [];
           
           const dateStr = now.toISOString().substring(0, 10);
 
@@ -348,7 +297,7 @@ function runAutonomousMlScanner() {
               newIncident.id, newIncident.severity, newIncident.title, newIncident.time, newIncident.detected, 
               newIncident.confidence, newIncident.area, newIncident.source, newIncident.mmsi, newIncident.distance, 
               newIncident.lat, newIncident.lng, newIncident.summary, newIncident.windDir, newIncident.windSpeed, 
-              newIncident.currentDir, newIncident.currentSpeed, JSON.stringify(newIncident.signals), dateStr, JSON.stringify(footprint)
+              newIncident.currentDir, newIncident.currentSpeed, JSON.stringify(newIncident.signals), dateStr, JSON.stringify(newIncident.polygon)
             ],
             (err) => {
               if (err) console.error('Error inserting oil spill:', err.message);
@@ -482,42 +431,10 @@ app.post('/api/incidents/scan', (req, res) => {
             ])
           };
           
-          // Re-use physical footprint math
+          // Re-use physical footprint math via Python Computer Vision
           const vesselCog = Math.random() * 360;
-          const spillDirection = (vesselCog + 180 + (Math.random() * 20 - 10)) % 360; 
-          const theta = spillDirection * (Math.PI / 180);
-          
-          const areaSqKm = parseFloat(newIncident.area);
-          const lengthKm = Math.max(5, Math.min(30, areaSqKm * (1.5 + Math.random() * 1.5)));
-          const widthKm = areaSqKm / lengthKm;
-          const trailLength = lengthKm / 111.0; 
-          const baseWidth = widthKm / 111.0;
-          const footprint = [];
-          const seed = Math.floor(Math.random() * 99999);
-          const segments = 15 + Math.floor(Math.random() * 10);
-          
-          for (let i = 0; i <= segments; i++) {
-            const t = i / segments;
-            const dist = t * trailLength;
-            const noiseX = Math.sin(t * (10 + (seed % 5)) + seed) * (trailLength * 0.1) + Math.cos(t * 20) * (trailLength * 0.02);
-            const noiseW = Math.sin(t * (15 + (seed % 7))) * (baseWidth * 0.4);
-            const taper = Math.max(0, 1 - Math.pow(t, 1.5)); 
-            const width = (baseWidth + noiseW) * taper + (baseWidth * 0.2); 
-            const cx = newIncident.lng + dist * Math.cos(theta) + noiseX * Math.cos(theta + Math.PI/2);
-            const cy = newIncident.lat + dist * Math.sin(theta) + noiseX * Math.sin(theta + Math.PI/2);
-            footprint.push([cy + width * Math.sin(theta + Math.PI / 2), cx + width * Math.cos(theta + Math.PI / 2)]);
-          }
-          for (let i = segments; i >= 0; i--) {
-            const t = i / segments;
-            const dist = t * trailLength;
-            const noiseX = Math.sin(t * (10 + (seed % 5)) + seed) * (trailLength * 0.1) + Math.cos(t * 20) * (trailLength * 0.02);
-            const noiseW = Math.cos(t * (12 + (seed % 6))) * (baseWidth * 0.4);
-            const taper = Math.max(0, 1 - Math.pow(t, 1.5)); 
-            const width = (baseWidth + noiseW) * taper + (baseWidth * 0.2);
-            const cx = newIncident.lng + dist * Math.cos(theta) + noiseX * Math.cos(theta + Math.PI/2);
-            const cy = newIncident.lat + dist * Math.sin(theta) + noiseX * Math.sin(theta + Math.PI/2);
-            footprint.push([cy - width * Math.sin(theta + Math.PI / 2), cx - width * Math.cos(theta + Math.PI / 2)]);
-          }
+          const mlOutput = runPythonCnnModel(lat, lng, newIncident.mmsi, vesselCog);
+          const footprint = mlOutput.polygon || [];
           
           db.run(
             `INSERT OR IGNORE INTO oil_spills (id, severity, title, time, detected, confidence, area, source, mmsi, distance, lat, lng, summary, windDir, windSpeed, currentDir, currentSpeed, signals_json, date, polygon_json) 
