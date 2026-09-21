@@ -1,0 +1,76 @@
+{
+  "date": "2026-08-07",
+  "scene": {
+    "id": "S1D_IW_GRDH_1SDV_20260807T142205_20260807T142234_004021_007504_F7CE_COG.SAFE",
+    "acquiredAt": "2026-08-07T14:22:05Z",
+    "platform": "S1D",
+    "orbitState": "ascending"
+  },
+  "ourSpillId": "MS-20260807-OMAN_ARABI-01",
+  "status": "confirmed",
+  "oilProbability": 0.9771,
+  "areaKm2": 100.4332,
+  "lengthKm": 97.668,
+  "referenceAreaKm2": 270.7,
+  "iou": 0.3611,
+  "precision": 0.9808,
+  "recall": 0.3636,
+  "precision1px": 0.9885,
+  "recall1px": 0.4427,
+  "culprit": {
+    "kind": "sar_vessel",
+    "relation": "ahead_on_axis",
+    "lon": 56.334801,
+    "lat": 17.507057,
+    "peakDb": 0.74,
+    "extentM": 74.6,
+    "distanceToHeadKm": 20.35,
+    "angleFromAxisDeg": 0.6,
+    "score": 0.1993,
+    "static": false,
+    "aisMatch": null,
+    "darkVessel": true,
+    "confidence": 0.386
+  },
+  "head": {
+    "lon": 56.506805419921875,
+    "lat": 17.588424682617188,
+    "confidence": 0.676,
+    "tail": {
+      "lon": 57.12821960449219,
+      "lat": 18.236618041992188
+    },
+    "endScores": [
+      0.411,
+      -0.411
+    ],
+    "evidence": []
+  },
+  "referenceSourceMmsi": [
+    "419001618"
+  ],
+  "verification": [
+    "Wind 11.2 m/s inside the SAR oil-detection window (2.5\u201312 m/s)",
+    "Sentinel-2 clear view 7.5 h from SAR pass"
+  ],
+  "metocean": {
+    "time": "2026-08-07T14:00:00+00:00",
+    "windMs": 11.25,
+    "windFromDeg": 212.0,
+    "currentMs": 0.2777777777777778,
+    "currentToDeg": 68.0,
+    "waveHeightM": 3.06,
+    "source": "Open-Meteo (ERA5 reanalysis / ECMWF forecast; Copernicus Marine currents & waves)"
+  },
+  "stats": {
+    "aois": 1,
+    "scenes": 1,
+    "candidates": 8,
+    "verified": 8,
+    "confirmed": 5,
+    "review": 2,
+    "rejected": 1,
+    "skipped": [],
+    "elapsedSec": 48.9
+  }
+}

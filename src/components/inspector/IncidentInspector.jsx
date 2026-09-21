@@ -1,150 +1,149 @@
 import { useEffect, useState } from 'react';
-import { useIncidents } from '../../context/IncidentContext';
-import { analyzeAoi, getWeather } from '../../services/marineApi';
+import { useSpills } from '../../context/SpillContext';
+import { AIS_TYPE_LABEL } from '../../utils/vesselTaxonomy';
 
-const severityClass = severity => severity === 'REVIEW' ? 'medium' : severity === 'LOW' ? 'low' : '';
+const pct = v => (v == null ? '–' : `${(v * 100).toFixed(0)}%`);
+const num = (v, d = 1, unit = '') => (v == null || Number.isNaN(v) ? '–' : `${Number(v).toFixed(d)}${unit}`);
+const compass = deg => (deg == null ? '' : ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(deg / 45) % 8]);
+
+function candidateTitle(c) {
+  if (c.kind === 'ais_vessel') return c.name || `MMSI ${c.mmsi}`;
+  if (c.kind === 'sar_vessel') return c.aisMatch ? `${c.aisMatch.name || c.aisMatch.mmsi} (seen in SAR)` : (c.relation === 'ahead_on_axis' ? 'Vessel ahead of slick (SAR, no AIS)' : 'AIS-dark vessel seen in SAR');
+  return c.name;
+}
+
+function candidateNote(c) {
+  if (c.kind === 'ais_vessel') {
+    return `${AIS_TYPE_LABEL(c.shipType)} · MMSI ${c.mmsi} · explains ${pct(c.coverage)} of slick, mean offset ${num(c.meanOffsetKm, 2)} km`
+      + (c.releaseWindow ? ` · est. release ${c.releaseWindow[0].slice(11, 16)}–${c.releaseWindow[1].slice(11, 16)} UTC` : '');
+  }
+  if (c.kind === 'sar_vessel' && c.relation === 'ahead_on_axis') {
+    return `Ship seen in SAR ${c.distanceToHeadKm} km ahead of the slick head, ${c.angleFromAxisDeg}° off its axis — consistent with a vessel that stopped discharging and steamed on${c.darkVessel ? ' · no AIS match' : ''}`;
+  }
+  if (c.kind === 'sar_vessel') return `Bright point target ${c.peakDb} dB, ${c.distanceToHeadKm} km from slick head${c.darkVessel ? ' · no AIS match at acquisition time' : ''}`;
+  return `${c.distanceToEndKm} km from a slick end${c.reason ? ` · ${c.reason}` : ''}`;
+}
 
 export default function IncidentInspector({ onEvidence, onTrack, onReport, minimized, setMinimized }) {
-  const { selectedIncident: incident } = useIncidents();
+  const { selected, detail, load, date } = useSpills();
   const [tab, setTab] = useState('overview');
-  const [weather, setWeather] = useState(null);
-  const [aoiAnalysis, setAoiAnalysis] = useState(null);
+  useEffect(() => setTab('overview'), [selected?.id]);
 
-  useEffect(() => {
-    if (!incident.id) return;
-    setTab('overview');
-    getWeather(incident.lat, incident.lng).then(setWeather).catch(() => setWeather(null));
-    analyzeAoi(incident.lat, incident.lng, incident.id).then(setAoiAnalysis).catch(() => setAoiAnalysis(null));
-  }, [incident]);
-
-  if (!incident || !incident.id) {
-    return <section className={`incident-inspector shadow ${minimized ? 'minimized' : ''}`} aria-label="Selected incident details">
-      <div className="inspector-header"><h2>Awaiting New Detections</h2><p>The ML scanner is monitoring the live AIS feed.</p></div>
+  if (!selected) {
+    return <section className={`incident-inspector shadow ${minimized ? 'minimized' : ''}`} aria-label="Selected spill">
+      <div className="inspector-header"><div>
+        <h2>{load.state === 'loading' ? 'Scanning…' : 'No spill selected'}</h2>
+        <p>{load.state === 'ready' ? `Select a detection from ${date} on the map or in the list.` : 'Results appear here when the scan completes.'}</p>
+      </div></div>
     </section>;
   }
 
-  const confidenceScore = aoiAnalysis?.confidenceScore || incident.confidence;
-  const signals = aoiAnalysis ? [
-    ['Sentinel-1 SAR CNN Anomaly Model', `${aoiAnalysis.signalsBreakdown.sarCnnModelScore}%`, 'CNN backscatter attenuation candidate'],
-    ['Sentinel-2 Optical Spectral Check', `${aoiAnalysis.signalsBreakdown.opticalVerificationScore}%`, aoiAnalysis.opticalCloudFallback.triggered ? `Cloud fallback triggered (${aoiAnalysis.opticalCloudFallback.currentCloudCoverPercent}% clouds, fallback date used)` : 'Clear scene multispectral match'],
-    ['AIS Trajectory Match', `${aoiAnalysis.signalsBreakdown.aisTrajectoryMatchScore}%`, `Backward drift matches ${aoiAnalysis.suspectedSourceVessel.name}`],
-    ['Environmental Hydrodynamic Drift', `${aoiAnalysis.signalsBreakdown.environmentalDriftScore}%`, `V_slick = V_current + 0.03*V_wind (${aoiAnalysis.hydrodynamicDrift.slickDriftSpeedKnots} kn)`]
-  ] : (incident.signals || [['SAR morphology', incident.confidence, 'Candidate detected'], ['AIS association', 45, 'Review required']]);
+  const d = detail?.id === selected.id ? detail.detail : null;
+  const v = d?.verification;
+  const met = v?.metocean || {};
+  const feats = v?.features || {};
+  const att = d?.attribution;
+  const culprit = d?.culprit;
 
-  return <section className={`incident-inspector shadow ${minimized ? 'minimized' : ''}`} aria-label="Selected incident details">
+  return <section className={`incident-inspector shadow ${minimized ? 'minimized' : ''}`} aria-label="Selected spill details" data-testid="inspector">
     <div className="inspector-header">
       <div>
         <div className="incident-identity">
-          <span className={`severity-status ${severityClass(incident.severity)}`} />
-          <span>{incident.id}</span>
-          <span className="incident-severity">{incident.severity}</span>
+          <span className={`severity-status ${selected.severity === 'REVIEW' ? 'medium' : selected.severity === 'LOW' ? 'low' : ''}`} />
+          <span>{selected.id}</span>
+          <span className="incident-severity">{selected.status.toUpperCase()}</span>
         </div>
-        <h2>{incident.title}</h2>
-        <p>{incident.detected || `Detected 01 Sep 2026 · ${incident.time} UTC`}</p>
+        <h2>{selected.aoiName}</h2>
+        <p>Sentinel-1 {d?.scene?.platform || ''} pass {selected.acquiredAt?.replace('T', ' ').slice(0, 16)} UTC</p>
       </div>
-      <button className="btn btn-sm btn-outline-light inspector-close" onClick={() => setMinimized(value => !value)} title={minimized ? 'Expand details' : 'Collapse details'}>
+      <button className="btn btn-sm btn-outline-light inspector-close" onClick={() => setMinimized(m => !m)} title={minimized ? 'Expand' : 'Collapse'}>
         <i className={`bi ${minimized ? 'bi-chevron-left' : 'bi-chevron-right'}`} />
       </button>
     </div>
 
     <div className="primary-confidence">
-      <div>
-        <span>MULTI-SIGNAL CONFIDENCE</span>
-        <strong>{confidenceScore}%</strong>
-      </div>
-      <div className="progress">
-        <div className="progress-bar bg-warning" style={{ width: `${confidenceScore}%` }} />
-      </div>
-      <p>{confidenceScore >= 80 ? 'Critical Alert · Immediate response recommended' : 'Multi-signal review required'}</p>
+      <div><span>P(OIL) — MULTI-MODAL VERIFIER</span><strong data-testid="oil-probability">{pct(selected.oilProbability)}</strong></div>
+      <div className="progress"><div className="progress-bar" style={{ width: pct(selected.oilProbability) }} /></div>
+      <p>{selected.status === 'confirmed' ? 'Confirmed oil slick' : selected.status === 'review' ? 'Probable slick — analyst review' : 'Rejected as look-alike'}</p>
     </div>
 
     <div className="inspector-actions">
-      <button className="btn btn-primary btn-sm" onClick={onEvidence}><i className="bi bi-columns-gap" />Evidence view</button>
-      <button className="btn btn-outline-light btn-sm" onClick={() => onReport(incident)}><i className="bi bi-file-earmark-arrow-down" />Report</button>
+      <button className="btn btn-primary btn-sm" onClick={onEvidence} disabled={!d}><i className="bi bi-columns-gap" /> Evidence</button>
+      <button className="btn btn-outline-light btn-sm" onClick={() => onReport(selected, d)} disabled={!d}><i className="bi bi-file-earmark-arrow-down" /> Report</button>
     </div>
 
     <ul className="nav nav-pills inspector-tabs" role="tablist">
-      {['overview', 'evidence', 'timeline'].map(name => (
-        <li key={name}>
-          <button className={`nav-link ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)}>{name}</button>
-        </li>
+      {['overview', 'verification', 'attribution'].map(name => (
+        <li key={name}><button className={`nav-link ${tab === name ? 'active' : ''}`} onClick={() => setTab(name)} data-testid={`tab-${name}`}>{name}</button></li>
       ))}
     </ul>
 
-    {tab === 'overview' && (
-      <div className="detail-pane active">
+    {tab === 'overview' && <div className="detail-pane active">
+      <div className="fact-grid">
+        <div><span>SLICK AREA</span><strong data-testid="spill-area">{num(selected.areaKm2, 2)} km²</strong></div>
+        <div><span>LENGTH</span><strong>{num(selected.lengthKm, 1)} km</strong></div>
+        <div><span>POLYGON PARTS</span><strong>{d?.metrics?.nParts ?? '–'}</strong></div>
+        <div><span>SAR CONTRAST</span><strong>{num(d?.metrics?.contrastDb, 1)} dB</strong></div>
+        <div><span>CENTROID</span><strong>{selected.centroid.lat.toFixed(3)}°, {selected.centroid.lon.toFixed(3)}°</strong></div>
+        <div><span>U-NET MEAN PROB</span><strong>{pct(d?.metrics?.meanProb)}</strong></div>
+      </div>
+      <div className="source-callout" data-testid="culprit-callout">
+        <div className="callout-icon"><i className="bi bi-bullseye" /></div>
+        <div>
+          <span>MOST LIKELY SOURCE</span>
+          <strong>{culprit ? candidateTitle(culprit) : (att ? 'No source identified' : 'Not attributed (rejected)')}</strong>
+          <p>{culprit ? `${pct(culprit.confidence)} attribution confidence · ${culprit.kind.replace('_', ' ')}` :
+            att ? `${att.aisCoverage.vessels} AIS vessels in the ±24 h window` : ''}</p>
+        </div>
+        {culprit?.kind === 'ais_vessel' && <button className="btn btn-sm btn-link" onClick={() => onTrack(culprit.mmsi)}>Track</button>}
+      </div>
+    </div>}
+
+    {tab === 'verification' && <div className="detail-pane active">
+      <div className="fact-grid">
+        <div><span>WIND (10 m)</span><strong>{num(met.windMs, 1, ' m/s')} {met.windFromDeg != null ? `from ${compass(met.windFromDeg)}` : ''}</strong></div>
+        <div><span>CURRENT</span><strong>{num(met.currentMs, 2, ' m/s')} {met.currentToDeg != null ? `to ${compass(met.currentToDeg)}` : ''}</strong></div>
+        <div><span>WAVE HEIGHT</span><strong>{num(met.waveHeightM, 1, ' m')}</strong></div>
+        <div><span>SENTINEL-2</span><strong>{v?.optical?.status?.replace('_', ' ') || '–'}{v?.optical?.dtHours != null ? ` (${num(Math.abs(v.optical.dtHours), 1)} h)` : ''}</strong></div>
+      </div>
+      <div className="signal-header mt-3"><span>Verification indicators</span></div>
+      <div className="evidence-list">
+        {(v?.indicators || []).map(t => <div className="evidence-item" key={t}><p>{t}</p></div>)}
+        {v?.optical?.note && <div className="evidence-item"><p>{v.optical.note}</p></div>}
+      </div>
+      <div className="historical-note">
+        <i className="bi bi-cpu" />
+        <span><strong>Gradient-boosted verifier</strong>
+          <small>SAR shape & contrast + wind/current/waves + S2 FAI/NDVI/visible contrast → P(oil) {pct(selected.oilProbability)}.
+            Scene dark fraction {pct(feats.sceneDarkFrac)}. Nearest SAR vessel {num(feats.nearestSarVesselKm, 1, ' km')}.</small></span>
+      </div>
+    </div>}
+
+    {tab === 'attribution' && <div className="detail-pane active" data-testid="attribution-pane">
+      {!att ? <p className="text-muted small">Attribution runs for confirmed/review slicks only.</p> : <>
         <div className="fact-grid">
-          <div><span>Estimated area</span><strong>{incident.area || '18.4 km²'}</strong></div>
-          <div><span>Nearest source</span><strong>{aoiAnalysis?.suspectedSourceVessel?.name || incident.source || 'MV Ocean Star'}</strong></div>
-          <div><span>Origin distance</span><strong>{aoiAnalysis?.suspectedSourceVessel?.distanceKm || '1.2'} km</strong></div>
-          <div><span>Drift Speed</span><strong>{aoiAnalysis?.hydrodynamicDrift?.slickDriftSpeedKnots || '0.96'} kn</strong></div>
+          <div><span>AIS VESSELS (±24 h)</span><strong>{att.aisCoverage.vessels}</strong></div>
+          <div><span>AIS POSITIONS</span><strong>{att.aisCoverage.positions}</strong></div>
+          <div><span>OIL DRIFT</span><strong>{num(att.drift.speedKnots, 2)} kn</strong></div>
+          <div><span>HEAD CONFIDENCE</span><strong>{pct(att.head.confidence)}</strong></div>
         </div>
-
-        {aoiAnalysis?.opticalCloudFallback?.triggered && (
-          <div className="alert alert-dark border-warning text-warning small my-2 py-2">
-            <i className="bi bi-cloud-slash me-1" />
-            <strong>Optical Cloud Fallback Active:</strong> Cloud cover was {aoiAnalysis.opticalCloudFallback.currentCloudCoverPercent}%. Showing clear scene from past day ({new Date(aoiAnalysis.opticalCloudFallback.selectedOpticalDate).toLocaleDateString()}).
-          </div>
+        {att.aisCoverage.positions === 0 && (
+          <div className="historical-note"><i className="bi bi-info-circle" /><span><strong>No stored AIS for this window</strong>
+            <small>AIS history is recorded from the live feed going forward; for older dates attribution relies on vessels detected directly in the SAR image.</small></span></div>
         )}
-
-        <div className="source-callout">
-          <div className="callout-icon"><i className="bi bi-tsunami" /></div>
-          <div>
-            <span>LIKELY SOURCE</span>
-            <strong>{aoiAnalysis?.suspectedSourceVessel?.name || incident.source || 'MV Ocean Star'}</strong>
-            <p>MMSI {aoiAnalysis?.suspectedSourceVessel?.mmsi || '419001842'} · Alignment 90%</p>
-          </div>
-          <button className="btn btn-sm btn-link" onClick={() => onTrack(aoiAnalysis?.suspectedSourceVessel?.name || incident.source)}>Track</button>
-        </div>
-
-        <div className="explainer">
-          <div>
-            <i className="bi bi-stars" />
-            <span><strong>Multi-Factor Weighted Verification</strong><small>SAR CNN (35%) + S2 Optical (25%) + AIS (25%) + Wind/Current (15%)</small></span>
-          </div>
-          <button className="btn btn-sm btn-light" onClick={onEvidence}>Explain</button>
-        </div>
-      </div>
-    )}
-
-    {tab === 'evidence' && (
-      <div className="detail-pane active">
-        <div className="signal-header"><span>Evidence signal</span><span>Score</span></div>
+        <div className="signal-header mt-3"><span>Ranked candidate sources</span><span>Confidence</span></div>
         <div className="evidence-list">
-          {signals.map(([name, score, note]) => (
-            <div className="evidence-item" key={name}>
-              <div className="evidence-top"><strong>{name}</strong><span>{score}</span></div>
-              <p>{note}</p>
-              <div className="progress"><div className="progress-bar" style={{ width: typeof score === 'string' ? score : `${score}%` }} /></div>
+          {att.candidates.length === 0 && <p className="text-muted small">No vessel track, SAR target or platform fits this slick.</p>}
+          {att.candidates.slice(0, 6).map((c, i) => (
+            <div className="evidence-item" key={`${c.kind}-${c.mmsi || c.id || `${c.lon},${c.lat}`}`} data-testid="candidate">
+              <div className="evidence-top"><strong>{i + 1}. {candidateTitle(c)}</strong><span>{pct(c.confidence)}</span></div>
+              <p>{candidateNote(c)}</p>
+              <div className="progress"><div className="progress-bar" style={{ width: pct(c.confidence) }} /></div>
             </div>
           ))}
         </div>
-        <div className="historical-note">
-          <i className="bi bi-wind" />
-          <span>
-            <strong>{weather?.source === 'preview' ? 'Hydrodynamic Drift Model' : 'Copernicus CMEMS & ERA5'}</strong>
-            <small>
-              {weather
-                ? `${weather.wind?.direction || 'NW'} wind ${weather.wind?.speedKnots || 12} kn · ${weather.waves?.heightMetres || 1.2} m waves · current ${weather.current?.speedKnots || 0.6} kn`
-                : 'Environmental conditions loading...'}
-            </small>
-          </span>
-        </div>
-      </div>
-    )}
-
-    {tab === 'timeline' && (
-      <div className="detail-pane active">
-        <div className="activity-timeline">
-          {(incident.timeline || [[`${incident.time || '08:45'} UTC`, 'Candidate queued', 'Awaiting analyst triage.']]).map(([time, title, description], index, list) => (
-            <div className={`timeline-event ${index === list.length - 1 ? 'alert' : ''}`} key={`${time}-${title}`}>
-              <time>{time}</time>
-              <strong>{title}</strong>
-              <p>{description}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    )}
+        <div className="historical-note"><i className="bi bi-diagram-3" /><span><strong>Method</strong><small>{att.method}. Oil drift = current + 3 % wind.</small></span></div>
+      </>}
+    </div>}
   </section>;
 }
