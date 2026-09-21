@@ -48,3 +48,15 @@ archive/
 *.pth
 *.pt
 *.onnx
+
+# MarineSight ML artefacts
+ml_service/cache/
+ml_service/data/train*/
+ml_service/data/*.log
+ml_service/data/verifier_rows.csv
+__pycache__/
+.pytest_cache/
+# ...but ship the trained models and the land mask the pipeline needs at runtime
+!ml_service/models/*.pt
+!ml_service/data/ne_10m_*.zip
+qa-artifacts/

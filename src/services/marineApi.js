@@ -1,38 +1,25 @@
-export async function getWeather(lat, lng) {
-  const response = await fetch(`/api/weather/currents?lat=${encodeURIComponent(lat)}&lng=${encodeURIComponent(lng)}`);
-  if (!response.ok) throw new Error('Weather service is unavailable');
-  return response.json();
+async function json(url, options) {
+  const res = await fetch(url, options);
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok && res.status !== 202) {
+    throw Object.assign(new Error(body.error || `Request failed (${res.status})`), { status: res.status, body });
+  }
+  return { status: res.status, body };
 }
 
-export async function getSatelliteImage(collection, bbox) {
-  const response = await fetch('/api/sentinel/process-tile', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ collection, bbox, width: 1280, height: 720 })
-  });
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Satellite scene unavailable');
-  return URL.createObjectURL(await response.blob());
-}
+export const getHealth = () => json('/api/health').then(r => r.body);
+export const getAois = () => json('/api/aois').then(r => r.body);
+export const getScans = () => json('/api/scans').then(r => r.body);
+export const getScan = date => json(`/api/scans/${date}`).then(r => r.body);
 
-export async function getCachedSatelliteImage(collection, coastId, highRes = false) {
-  const params = new URLSearchParams({ collection, coastId });
-  if (highRes) params.set('highRes', 'true');
-  const response = await fetch(`/api/sentinel/cached-tile?${params}`);
-  if (!response.ok) throw new Error('Cached satellite imagery unavailable');
-  return URL.createObjectURL(await response.blob());
-}
+/** Returns {state:'ready', spills, scan} or {state:'loading', job} (the backend is running the ML pipeline). */
+export const getSpills = (date, includeRejected = false) =>
+  json(`/api/spills?date=${encodeURIComponent(date)}${includeRejected ? '&include=rejected' : ''}`).then(r => r.body);
 
-export async function getHealth() {
-  const response = await fetch('/api/health');
-  if (!response.ok) throw new Error('API health check failed');
-  return response.json();
-}
+export const getSpill = id => json(`/api/spills/${encodeURIComponent(id)}`).then(r => r.body);
+export const rescan = date => json('/api/scans', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date, force: true })
+}).then(r => r.body);
 
-export async function analyzeAoi(lat, lng, incidentId) {
-  const response = await fetch('/api/incidents/analyze-aoi', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ lat, lng, incidentId })
-  });
-  if (!response.ok) throw new Error('Targeted AOI analysis failed');
-  return response.json();
-}
+export const getVesselTrack = (mmsi, hours = 24, to) =>
+  json(`/api/ais/vessels/${encodeURIComponent(mmsi)}?hours=${hours}${to ? `&to=${encodeURIComponent(to)}` : ''}`).then(r => r.body);

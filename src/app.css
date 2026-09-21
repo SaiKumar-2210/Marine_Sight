@@ -76,3 +76,44 @@ body { min-width: 0; }
   .evidence-card { height: 160px; }
   .evidence-workspace footer { padding: 12px; }
 }
+
+/* ---- MarineSight vNext: scan state, AIS layer, attribution ---- */
+.map-shell { position: absolute; inset: 0; }
+.scan-overlay { position: absolute; inset: 0; z-index: 900; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #E5E5CB; background: rgba(26, 18, 11, .72); backdrop-filter: blur(4px); text-align: center; }
+.scan-overlay h4 { margin: 6px 0 0; font-size: 20px; font-weight: 600; }
+.scan-overlay p { margin: 0; color: #b8b49a; font-size: 12px; max-width: 520px; }
+.scan-overlay small { color: #8a7e6a; font-size: 11px; }
+.scan-overlay .spinner-border { width: 2.6rem; height: 2.6rem; color: #D5CEA3; }
+.scan-overlay.error i { font-size: 30px; color: #ff6b4a; }
+.scan-progress { width: 360px; height: 4px; background: #3C2A21; }
+.scan-progress div { height: 100%; background: linear-gradient(90deg, #b8a46a, #D5CEA3); transition: width .6s ease; }
+.scan-chip { padding: 3px 7px; font-size: 8px; font-weight: 600; letter-spacing: .06em; color: #1A120B; background: #D5CEA3; white-space: nowrap; }
+.scan-chip.loading { background: #ffb703; }
+.scan-chip.failed { background: #ff6b4a; }
+.map-toolbar input[type=date] { width: 130px; font-size: 10px; border-radius: 0; color-scheme: dark; }
+.vessel-hover { position: absolute; z-index: 800; pointer-events: none; display: flex; flex-direction: column; gap: 2px; padding: 6px 9px; background: rgba(15, 12, 9, .92); border: 1px solid rgba(213, 206, 163, .3); font-size: 10px; }
+.vessel-hover span { color: #b8b49a; }
+.vessel-card { position: absolute; z-index: 850; right: 400px; top: 70px; width: 250px; padding: 12px 14px; background: var(--panel); border: 1px solid rgba(213, 206, 163, .3); }
+.vessel-card .icon-clear { position: absolute; top: 8px; right: 10px; }
+.vessel-card strong { display: block; margin: 4px 0 8px; font-size: 13px; }
+.vessel-card dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; font-size: 10px; }
+.vessel-card dt { color: #8a7e6a; font-weight: 500; }
+.vessel-card dd { margin: 0; color: #E5E5CB; }
+.vessel-legend { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 13px 12px; }
+.legend-chip { display: flex; align-items: center; gap: 4px; padding: 2px 5px; color: #E5E5CB; background: rgba(60, 42, 33, .6); border: 1px solid transparent; font-size: 8px; }
+.legend-chip i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.legend-chip b { color: #8a7e6a; font-weight: 500; }
+.legend-chip.off { opacity: .35; }
+.slick-head-marker { display: grid; place-items: center; width: 24px; height: 24px; color: #ffd600; font-size: 18px; text-shadow: 0 0 6px #000; }
+.queue-empty { padding: 14px; color: #b8b49a; font-size: 10px; }
+.queue-empty small { display: block; margin-top: 6px; color: #8a7e6a; font-size: 9px; }
+.aoi-list { margin-top: 8px; max-height: 300px; overflow: auto; border: 1px solid var(--line); background: rgba(20, 16, 12, .96); }
+.aoi-list button { display: block; width: 100%; padding: 7px 9px; color: #E5E5CB; background: transparent; border: 0; border-bottom: 1px solid var(--line); text-align: left; }
+.aoi-list button.active, .aoi-list button:hover { background: rgba(60, 42, 33, .7); }
+.aoi-list strong { display: block; font-size: 10px; font-weight: 600; }
+.aoi-list small { color: #8a7e6a; font-size: 8px; }
+.evidence-card.real { height: 420px; background: #0b0805; display: flex; align-items: center; justify-content: center; }
+.evidence-card.real img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.evidence-card.real .evidence-card-title { background: rgba(10, 8, 6, .75); padding: 4px 7px; }
+.evidence-missing { color: #8a7e6a; font-size: 11px; padding: 0 30px; text-align: center; }
+.feed-health small + small { margin-top: 3px; }
