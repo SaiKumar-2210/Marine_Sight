@@ -13,6 +13,7 @@ Starts the real server on a fresh database, opens the operations UI for the benc
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -189,6 +190,51 @@ def main() -> int:
             m = re.search(r"AIS\s*([\d,]+)\s*vessels", footer)
             check("UI shows live AIS vessel count", bool(m) and int(m.group(1).replace(",", "")) > 0, footer.replace("\n", " "))
             page.screenshot(path=str(OUT / "05_ais_layer.png"))
+
+            # Imagery date label: names the acquisition actually drawn, not the requested date.
+            badge = page.locator("[data-testid=imagery-date]")
+            check("Imagery date label is on screen", badge.is_visible(), badge.inner_text().replace("\n", " · "))
+            page.click("button.map-mode:has-text('Sentinel-1')")
+            page.wait_for_timeout(5000)
+            label = page.locator("[data-testid=imagery-date-value]").inner_text()
+            cov = page.evaluate(
+                "fetch('/api/sentinel/coverage?collection=sentinel-1-grd&date=" + DATE + "&bbox=' +"
+                " (() => {const b = document.getElementById('map').__msMap.getBounds();"
+                " return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(',');})()).then(r => r.json())")
+            acquired = (cov or {}).get("acquiredAt", "")
+            check("Label names the real Sentinel-1 acquisition",
+                  "Sentinel-1" in label and acquired[:4] in label, f"{label!r} vs scene {acquired}")
+            check("Lookback for imagery is capped at 5 days",
+                  (cov or {}).get("maxLookbackDays") == 5, json.dumps(cov)[:160])
+
+            # Sentinel-2 view: the SAR raster must not be painted over the optical imagery.
+            page.click("button.map-mode:has-text('Sentinel-2')")
+            page.wait_for_timeout(6000)
+            rasters = page.evaluate("document.querySelectorAll('.leaflet-overlay-pane img').length")
+            s1_tiles = page.evaluate(
+                "[...document.querySelectorAll('.leaflet-tile-pane img')].filter(i => i.src.includes('sentinel-1-grd')).length")
+            s2_tiles = page.evaluate(
+                "[...document.querySelectorAll('.leaflet-tile-pane img')].filter(i => i.src.includes('sentinel-2-l2a')).length")
+            check("Sentinel-1 layers are cleared in the Sentinel-2 view",
+                  rasters == 0 and s1_tiles == 0 and s2_tiles > 0, f"sar rasters {rasters}, s1 tiles {s1_tiles}, s2 tiles {s2_tiles}")
+            page.screenshot(path=str(OUT / "05b_sentinel2.png"))
+            page.click("button.map-mode:has-text('Operations')")
+            page.wait_for_timeout(2000)
+
+            # Date selection: stepping a day updates the view without an error.
+            page.click('button[aria-label="Previous day"]')
+            page.wait_for_timeout(2500)
+            prev_day = (datetime.date.fromisoformat(DATE) - datetime.timedelta(days=1)).isoformat()
+            check("Day step switches the date cleanly",
+                  page.input_value("[data-testid=date-input]") == prev_day
+                  and not page.locator("[data-testid=scan-failed]").is_visible(),
+                  page.input_value("[data-testid=date-input]"))
+            page.fill("[data-testid=date-input]", "2031-01-01")
+            page.wait_for_timeout(1200)
+            check("Impossible date is refused in the UI, not as a failed scan",
+                  page.locator("[data-testid=date-error]").is_visible()
+                  and not page.locator("[data-testid=scan-failed]").is_visible(),
+                  page.locator("[data-testid=date-error]").inner_text() if page.locator("[data-testid=date-error]").count() else "no message")
 
             # Persistence: reload -> served from DB, no Loading overlay.
             t1 = time.time()

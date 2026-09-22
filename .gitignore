@@ -60,3 +60,5 @@ __pycache__/
 !ml_service/models/*.pt
 !ml_service/data/ne_10m_*.zip
 qa-artifacts/
+*.sqlite-wal
+*.sqlite-shm

@@ -170,8 +170,27 @@ function createScanJobs({ db, config, broadcast = () => {}, log = console }) {
     return { state: 'loading', job: publicJob(job) };
   }
 
+  /**
+   * Drop a job that has not started yet (the user moved to another date). A running pipeline is
+   * left alone: it already spent the Copernicus quota, so it may as well finish and be stored.
+   */
+  function cancel(date) {
+    const job = jobs.get(date);
+    if (!job || job.status !== 'queued') return false;
+    const at = queue.indexOf(job);
+    if (at >= 0) queue.splice(at, 1);
+    jobs.delete(date);
+    job.status = 'cancelled';
+    job.finishedAt = new Date().toISOString();
+    db.run(`DELETE FROM scans WHERE date = ? AND status = 'running'`, [date]).catch(() => {});
+    job.resolvers.forEach(r => r(publicJob(job)));
+    broadcast({ type: 'scan-cancelled', job: publicJob(job) });
+    return true;
+  }
+
   return {
     ensure,
+    cancel,
     get: date => publicJob(jobs.get(date)),
     wait: date => jobs.get(date)?.done,
     active: () => [...jobs.values()].map(publicJob),

@@ -106,7 +106,11 @@ def day_window(date_str: str) -> tuple[datetime, datetime]:
 
 
 def search(collection: str, bbox: list[float], start: datetime, end: datetime, limit: int = 100) -> list[dict]:
-    """STAC catalog search; returns features sorted by acquisition time."""
+    """STAC catalog search; returns features sorted by acquisition time.
+
+    Note: the CDSE catalog rejects `sortby`, so callers that want the most recent scene must ask
+    for a bounded window and take the last feature.
+    """
     body = {
         "bbox": list(bbox),
         "datetime": f"{_iso(start)}/{_iso(end)}",

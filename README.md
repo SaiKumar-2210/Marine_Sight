@@ -45,13 +45,31 @@ database — starts the ML pipeline and answers `202 {state:"loading", job}`; th
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/spills?date=` · `GET /api/spills/:id` | spills (polygon, P(oil), culprit) · full evidence |
+| `GET /api/spills/nearest?date=&maxDays=` | most recent stored detection within the lookback cap |
 | `GET /api/scans` · `GET /api/scans/:date` · `POST /api/scans` | scan index · job progress · forced rescan |
+| `DELETE /api/scans/:date` | drop a *queued* scan the operator navigated away from |
 | `GET /api/ais/vessels` | 10-minute AIS snapshot (ETag / 304) |
 | `GET /api/ais/vessels/:mmsi?hours=` | stored track for a vessel |
-| `GET /api/sentinel/tiles/:collection/:z/:x/:y.png?date=` | Sentinel-1/2 basemap tiles |
-| `WS /api/events` | `scan-progress`, `scan-complete`, `ais-refresh` |
+| `GET /api/sentinel/coverage?collection=&date=&bbox=` | which pass covers this view, and how old it is |
+| `GET /api/sentinel/tiles/:collection/:z/:x/:y.png?date=&t=` | Sentinel-1/2 basemap tiles (`t` pins one pass) |
+| `WS /api/events` | `scan-progress`, `scan-complete`, `scan-cancelled`, `ais-refresh` |
 
 Monitored areas for the daily scan live in `ml_service/aois.json`.
+
+### Dates, imagery and the lookback cap
+
+A Sentinel pass only revisits an area every few days, so the imagery on screen is usually older
+than the date the operator picked. Rather than hide that, the map labels what is actually drawn
+(`ImageryDateBadge`, fed by `/api/sentinel/coverage`) and pins the tiles to that one acquisition,
+so the label and the pixels can never disagree.
+
+Every backward search is bounded — an unbounded walk through the archive is slow and misleading:
+
+| Search | Rule |
+|---|---|
+| imagery for a view (`sentinelCoverage.js`) | last **5 days**; if empty, one probe that offers only the single most recent scene, flagged `beyondLookback` |
+| earlier passes for the static-target check (`vessels_sar._prior_passes`) | last **5 days**, at most 2 passes, then one bounded probe for a single scan; neighbouring targets share a chip and the whole check has a fetch budget |
+| previous detections when a date is empty (`/api/spills/nearest`) | at most **5 days** back through *stored* scans (never triggers new scans, never searches forward) |
 
 ## Models
 

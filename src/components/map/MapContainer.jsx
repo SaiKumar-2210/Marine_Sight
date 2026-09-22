@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import {
-  CircleMarker, GeoJSON, ImageOverlay, LayerGroup, MapContainer as LeafletMap, Marker, Polyline, TileLayer, Tooltip, useMap
+  CircleMarker, GeoJSON, ImageOverlay, LayerGroup, MapContainer as LeafletMap, Marker, Polyline, TileLayer, Tooltip, useMap, useMapEvents
 } from 'react-leaflet';
 import { useSpills } from '../../context/SpillContext';
 import { useMapSettings } from '../../context/MapContext';
 import { getVesselTrack } from '../../services/marineApi';
+import { useImageryCoverage } from '../../hooks/useImageryCoverage';
 import { AIS_TYPE_LABEL, VESSEL_TAXONOMY } from '../../utils/vesselTaxonomy';
+import ImageryDateBadge from './ImageryDateBadge';
 import VesselLayer from './VesselLayer';
 
 const STATUS_STYLE = {
@@ -38,6 +40,27 @@ function ExposeMap() {
   return null;
 }
 
+/** Reports the visible bbox (lon0,lat0,lon1,lat1) so we can resolve which pass covers this view. */
+function TrackBounds({ onChange }) {
+  const map = useMap();
+  const timer = useRef(null);
+  // Settle first: panning fires a burst of moveend events, and each distinct view costs a
+  // catalog lookup.
+  const report = useCallback(() => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      const b = map.getBounds();
+      onChange([
+        Math.max(-180, b.getWest()), Math.max(-90, b.getSouth()),
+        Math.min(180, b.getEast()), Math.min(90, b.getNorth())
+      ]);
+    }, 400);
+  }, [map, onChange]);
+  useEffect(() => { report(); return () => clearTimeout(timer.current); }, [report]);
+  useMapEvents({ moveend: report, zoomend: report });
+  return null;
+}
+
 function FlyTo({ target }) {
   const map = useMap();
   useEffect(() => { if (target) map.flyTo(target.center, target.zoom || 8, { duration: 0.6 }); }, [map, target]);
@@ -49,21 +72,29 @@ function fmtAge(ts) {
   return min < 60 ? `${min} min ago` : `${Math.round(min / 60)} h ago`;
 }
 
+/**
+ * Scan status as a card rather than a curtain: the operator can keep panning the map and reading
+ * the imagery for the newly chosen date while the pipeline works through it in the background.
+ */
 function LoadingOverlay({ date, load, onRetry }) {
   if (load.state === 'loading') {
     const p = load.job?.progress || {};
     return <div className="scan-overlay" role="status" data-testid="scan-loading">
-      <div className="spinner-border" />
-      <h4>Loading…</h4>
-      <p>No stored results for <strong>{date}</strong> — running the ML pipeline now.</p>
+      <div className="scan-overlay-head">
+        <div className="spinner-border spinner-border-sm" />
+        <h4>Loading {date}…</h4>
+      </div>
+      <p>No stored results yet — running the ML pipeline. The map stays usable meanwhile.</p>
       <div className="scan-progress"><div style={{ width: `${Math.max(3, p.pct || 0)}%` }} /></div>
       <small>{p.message || 'Queued'}{load.job?.status === 'queued' ? ' (waiting for another scan to finish)' : ''}</small>
     </div>;
   }
   if (load.state === 'failed') {
     return <div className="scan-overlay error" data-testid="scan-failed">
-      <i className="bi bi-exclamation-octagon" />
-      <h4>Scan failed for {date}</h4>
+      <div className="scan-overlay-head">
+        <i className="bi bi-exclamation-octagon" />
+        <h4>Scan failed for {date}</h4>
+      </div>
       <p>{load.error}</p>
       <button className="btn btn-sm btn-primary" onClick={onRetry}>Retry scan</button>
     </div>;
@@ -77,6 +108,7 @@ export default function MapCanvas({ vessels, flyTarget, focusVessel, onVesselSel
   const [hover, setHover] = useState(null);
   const [vessel, setVessel] = useState(null);
   const [vesselTrack, setVesselTrack] = useState([]);
+  const [bounds, setBounds] = useState(null);
 
   const selectVessel = useCallback(v => {
     setVessel(v);
@@ -100,22 +132,33 @@ export default function MapCanvas({ vessels, flyTarget, focusVessel, onVesselSel
   const baseUrl = mode === 'sentinel2'
     ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
     : 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}';
-  const collection = mode === 'sentinel1' ? 'sentinel-1-grd' : 'sentinel-2-l2a';
+  const collection = mode === 'sentinel2' ? 'sentinel-2-l2a' : 'sentinel-1-grd';
+  // The operations view draws a chart basemap, so no pass needs resolving for it.
+  const { coverage, error: coverageError } = useImageryCoverage(mode === 'operations' ? null : collection, date, bounds);
+  // Pin the tiles to the pass the badge names, so imagery and label can never disagree.
+  const tileQuery = `date=${date}${coverage?.acquiredAt ? `&t=${encodeURIComponent(coverage.acquiredAt)}` : ''}`;
+  // Sentinel-1 rasters (the grey SAR evidence chip) live in Leaflet's overlay pane, above the tile
+  // pane, so in Sentinel-2 view they would cover the optical imagery the operator switched to.
+  const showSarRaster = layers.sarEvidence && mode !== 'sentinel2';
+  const opticalView = mode === 'sentinel2';
 
   return (
     <div className="map-shell">
       <LoadingOverlay date={date} load={load} onRetry={forceRescan} />
+      <ImageryDateBadge mode={mode} date={date} coverage={coverage} error={coverageError} spills={spills} />
       <LeafletMap id="map" className="map-canvas" center={[17.5, 57.0]} zoom={7} minZoom={2} worldCopyJump zoomControl>
         <ExposeMap />
-        <TileLayer url={baseUrl} attribution="Tiles © Esri" />
+        <TrackBounds onChange={setBounds} />
+        <TileLayer url={baseUrl} attribution="Tiles © Esri" zIndex={1} />
         {(mode === 'sentinel1' || mode === 'sentinel2') && (
-          <TileLayer key={`${collection}-${date}`} url={`/api/sentinel/tiles/${collection}/{z}/{x}/{y}.png?date=${date}`}
-            attribution="© Copernicus Data Space Ecosystem" opacity={0.9} />
+          <TileLayer key={`${collection}-${coverage?.acquiredAt || date}`}
+            url={`/api/sentinel/tiles/${collection}/{z}/{x}/{y}.png?${tileQuery}`}
+            attribution="© Copernicus Data Space Ecosystem" opacity={0.9} zIndex={2} />
         )}
         <FlyTo target={flyTarget} />
         <FitToSpill spill={selected} />
 
-        {layers.sarEvidence && quicklook && (
+        {showSarRaster && quicklook && (
           <ImageOverlay key={quicklook.url} url={quicklook.url} opacity={0.85}
             bounds={[[quicklook.bbox[1], quicklook.bbox[0]], [quicklook.bbox[3], quicklook.bbox[2]]]} />
         )}
@@ -123,7 +166,14 @@ export default function MapCanvas({ vessels, flyTarget, focusVessel, onVesselSel
         {layers.slicks && <LayerGroup>
           {spills.map(s => (
             <GeoJSON key={`${s.id}-${s.id === selectedId}`} data={s.geometry}
-              style={{ ...STATUS_STYLE[s.status], className: `slick-polygon slick-${s.status}`, ...(s.id === selectedId ? { weight: 2.5, color: '#fff' } : {}) }}
+              style={{
+                ...STATUS_STYLE[s.status],
+                // Over optical imagery the outline is the useful part — a filled polygon would
+                // hide the very pixels the operator switched to Sentinel-2 to look at.
+                ...(opticalView ? { fillOpacity: 0.1, weight: 2 } : {}),
+                className: `slick-polygon slick-${s.status}`,
+                ...(s.id === selectedId ? { weight: 2.5, color: '#fff' } : {})
+              }}
               eventHandlers={{ click: () => setSelectedId(s.id) }}>
               <Tooltip sticky>{s.id} · {s.status} · P(oil) {(s.oilProbability * 100).toFixed(0)}% · {s.areaKm2.toFixed(1)} km²</Tooltip>
             </GeoJSON>

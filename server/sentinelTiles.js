@@ -1,6 +1,7 @@
 /** XYZ tile proxy for Copernicus Sentinel-1 / Sentinel-2 basemaps (credentials stay server-side). */
 const fs = require('fs');
 const path = require('path');
+const { MAX_LOOKBACK_DAYS } = require('./sentinelCoverage');
 
 const TRANSPARENT = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAQAAAAEAAQMAAABmvDolAAAAA1BMVEUAAACnej3aAAAAH0lEQVR42u3BAQEAAACAkP6v7ggKAAAAAAAAAAAAeA0WAAABF4f0hQAAAABJRU5ErkJggg==', 'base64');
 
@@ -14,42 +15,48 @@ function setup(){return {input:["B02","B03","B04","dataMask"],output:{bands:4}};
 function evaluatePixel(s){ return [2.8*s.B04, 2.8*s.B03, 2.8*s.B02, s.dataMask]; }`
 };
 
-function createTileProxy({ config, cacheDir }) {
-  let token = { value: null, expiresAt: 0 };
-
-  async function getToken() {
-    if (token.value && Date.now() < token.expiresAt - 60000) return token.value;
-    if (!config.cdse.clientId || !config.cdse.clientSecret) throw Object.assign(new Error('Copernicus credentials not configured'), { status: 503 });
-    const res = await fetch(config.cdse.tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'client_credentials', client_id: config.cdse.clientId, client_secret: config.cdse.clientSecret }),
-      signal: AbortSignal.timeout(15000)
-    });
-    if (!res.ok) throw new Error(`Copernicus auth failed (${res.status})`);
-    const body = await res.json();
-    token = { value: body.access_token, expiresAt: Date.now() + Number(body.expires_in || 600) * 1000 };
-    return token.value;
+/**
+ * Time range for one tile request.
+ * With `t` (an acquisition resolved by the coverage service) the tile shows exactly that pass, so
+ * the imagery matches the date label the UI is showing. Without it, fall back to a window that is
+ * capped at MAX_LOOKBACK_DAYS so a sparsely covered area cannot silently reach far back in time.
+ */
+function timeRangeFor(collection, date, t) {
+  const day = Date.parse(`${date}T00:00:00Z`);
+  if (t) {
+    const at = Date.parse(t);
+    if (collection === 'sentinel-1-grd') {
+      return { from: new Date(at - 3 * 3600000).toISOString(), to: new Date(at + 3 * 3600000).toISOString() };
+    }
+    const d0 = Date.parse(`${t.slice(0, 10)}T00:00:00Z`);
+    return { from: new Date(d0).toISOString(), to: new Date(d0 + 86400000 - 1000).toISOString() };
   }
+  return {
+    from: new Date(day - MAX_LOOKBACK_DAYS * 86400000).toISOString(),
+    to: new Date(day + 86400000 - 1000).toISOString()
+  };
+}
 
+function createTileProxy({ config, cacheDir, getToken }) {
   return async function tileHandler(req, res, next) {
     try {
       const { collection } = req.params;
       const z = Number(req.params.z), x = Number(req.params.x), y = Number(req.params.y);
       if (!EVALSCRIPTS[collection] || ![z, x, y].every(Number.isInteger)) return res.status(400).json({ error: 'bad tile request' });
       const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : new Date().toISOString().slice(0, 10);
+      const t = /^\d{4}-\d{2}-\d{2}T[\d:.]+Z?$/.test(req.query.t || '') ? req.query.t : null;
       res.set('Content-Type', 'image/png');
       if (z < 7) { res.set('Cache-Control', 'public, max-age=86400'); return res.send(TRANSPARENT); }
-      const file = path.join(cacheDir, collection, date, String(z), String(x), `${y}.png`);
+      // Cache per resolved pass when known, so switching dates cannot serve another pass's pixels.
+      const stamp = t ? t.replace(/[:.]/g, '-') : date;
+      const file = path.join(cacheDir, collection, stamp, String(z), String(x), `${y}.png`);
       if (fs.existsSync(file)) { res.set('Cache-Control', 'public, max-age=86400'); return res.send(fs.readFileSync(file)); }
 
       const n = 2 ** z;
       const lon0 = (x / n) * 360 - 180, lon1 = ((x + 1) / n) * 360 - 180;
-      const lat = t => (Math.atan(Math.sinh(Math.PI * (1 - (2 * t) / n))) * 180) / Math.PI;
-      const day = Date.parse(`${date}T00:00:00Z`);
-      const back = collection === 'sentinel-1-grd' ? 3 : 5;
+      const lat = tile => (Math.atan(Math.sinh(Math.PI * (1 - (2 * tile) / n))) * 180) / Math.PI;
       const dataFilter = {
-        timeRange: { from: new Date(day - back * 86400000).toISOString(), to: new Date(day + 86400000 - 1000).toISOString() },
+        timeRange: timeRangeFor(collection, date, t),
         mosaickingOrder: collection === 'sentinel-1-grd' ? 'mostRecent' : 'leastCC'
       };
       const body = {
@@ -79,4 +86,4 @@ function createTileProxy({ config, cacheDir }) {
   };
 }
 
-module.exports = { createTileProxy };
+module.exports = { createTileProxy, timeRangeFor };
