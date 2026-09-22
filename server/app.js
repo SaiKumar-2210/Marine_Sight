@@ -11,6 +11,8 @@ const { createAisService } = require('./ais');
 const { createScanJobs, validateDate, todayUtc } = require('./scanJobs');
 const { createScheduler } = require('./scheduler');
 const { createTileProxy } = require('./sentinelTiles');
+const { createTokenSource } = require('./cdseAuth');
+const { createCoverageService, MAX_LOOKBACK_DAYS } = require('./sentinelCoverage');
 
 function spillSummary(row) {
   return {
@@ -44,6 +46,10 @@ async function createApp({ log = console, overrides = {} } = {}) {
   const cfg = { ...config, ...overrides, ais: { ...config.ais, ...(overrides.ais || {}) }, scan: { ...config.scan, ...(overrides.scan || {}) } };
   const db = open(cfg.dbPath);
   await db.ready;
+  // A scan can only be 'running' while this process runs it, so a row left over from a previous
+  // process was interrupted and holds no results. Drop it: the UI would otherwise wait forever for
+  // a pipeline that no longer exists, and the date can simply be scanned again on demand.
+  await db.run(`DELETE FROM scans WHERE status = 'running'`).catch(() => {});
 
   const app = express();
   const server = http.createServer(app);
@@ -54,6 +60,8 @@ async function createApp({ log = console, overrides = {} } = {}) {
   };
 
   const ais = createAisService({ db, config: cfg, log, onRefresh: info => broadcast({ type: 'ais-refresh', ...info }) });
+  const getCdseToken = createTokenSource(cfg);
+  const coverage = createCoverageService({ config: cfg, getToken: getCdseToken, log });
   const scans = createScanJobs({ db, config: cfg, broadcast, log });
   const scheduler = createScheduler({ db, scans, config: cfg, log });
 
@@ -109,6 +117,11 @@ async function createApp({ log = console, overrides = {} } = {}) {
     } catch (err) { next(err); }
   });
 
+  /** Drop a scan the user navigated away from, so it cannot hold up the date they are now viewing. */
+  app.delete('/api/scans/:date', (req, res) => {
+    res.json({ cancelled: scans.cancel(req.params.date) });
+  });
+
   /**
    * GET /api/spills?date=YYYY-MM-DD
    * Ready -> 200 with spills. Not in the DB -> starts the ML pipeline on demand and answers
@@ -132,6 +145,30 @@ async function createApp({ log = console, overrides = {} } = {}) {
         scan: { status: scan.status, trigger: scan.trigger, finishedAt: scan.finished_at, partial: Boolean(scan.partial), stats: JSON.parse(scan.stats_json || 'null') },
         spills: rows.map(spillSummary)
       });
+    } catch (err) { next(err); }
+  });
+
+  /**
+   * GET /api/spills/nearest?date=YYYY-MM-DD[&maxDays=5]
+   * The most recent already-scanned date at or before `date` that actually holds a detection.
+   * Bounded by maxDays (default MAX_LOOKBACK_DAYS): if nothing was detected in that window the
+   * answer is 'none' — the UI must not keep walking further back through the archive.
+   */
+  app.get('/api/spills/nearest', async (req, res, next) => {
+    try {
+      const date = req.query.date || todayUtc();
+      const err = validateDate(date);
+      if (err) return res.status(400).json({ error: err });
+      const maxDays = Math.min(Math.max(Number(req.query.maxDays) || MAX_LOOKBACK_DAYS, 1), MAX_LOOKBACK_DAYS);
+      const from = new Date(Date.parse(`${date}T00:00:00Z`) - (maxDays - 1) * 86400000).toISOString().slice(0, 10);
+      const row = await db.get(
+        `SELECT p.date, COUNT(*) AS spills FROM spills p
+           JOIN scans s ON s.date = p.date AND s.status = 'complete'
+          WHERE p.date <= ? AND p.date >= ? AND p.status != 'rejected'
+          GROUP BY p.date ORDER BY p.date DESC LIMIT 1`, [date, from]);
+      res.json(row
+        ? { state: 'ready', date: row.date, spills: row.spills, searchedFrom: from, maxDays }
+        : { state: 'none', searchedFrom: from, maxDays, reason: `no stored detections between ${from} and ${date}` });
     } catch (err) { next(err); }
   });
 
@@ -180,7 +217,24 @@ async function createApp({ log = console, overrides = {} } = {}) {
     } catch (err) { next(err); }
   });
 
-  app.get('/api/sentinel/tiles/:collection/:z/:x/:y.png', createTileProxy({ config: cfg, cacheDir: path.join(cfg.ML_DIR, 'cache', 'tiles') }));
+  /**
+   * GET /api/sentinel/coverage?collection=&date=&bbox=lon0,lat0,lon1,lat1
+   * Which pass the map is really showing for this view — its acquisition time and how far back it
+   * is from the requested date. The UI labels the screen with it and pins the tiles to that pass.
+   */
+  app.get('/api/sentinel/coverage', async (req, res, next) => {
+    try {
+      const date = req.query.date || todayUtc();
+      const err = validateDate(date);
+      if (err) return res.status(400).json({ error: err });
+      const bbox = String(req.query.bbox || '').split(',').map(Number);
+      if (bbox.length !== 4 || bbox.some(v => !Number.isFinite(v))) return res.status(400).json({ error: 'bbox must be lon0,lat0,lon1,lat1' });
+      res.json(await coverage.resolve({ collection: req.query.collection || 'sentinel-1-grd', date, bbox }));
+    } catch (err) { next(err); }
+  });
+
+  app.get('/api/sentinel/tiles/:collection/:z/:x/:y.png',
+    createTileProxy({ config: cfg, cacheDir: path.join(cfg.ML_DIR, 'cache', 'tiles'), getToken: getCdseToken }));
 
   app.use('/api', (req, res) => res.status(404).json({ error: `no route ${req.method} ${req.path}` }));
   // eslint-disable-next-line no-unused-vars

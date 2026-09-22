@@ -17,6 +17,11 @@ from .raster import GeoRaster
 
 KM_PER_DEG = 111.32
 
+# Prior-pass search limits (see `_prior_passes`): a bounded window, then one archive probe.
+LOOKBACK_DAYS = 5
+ARCHIVE_PROBE_DAYS = 30  # single bounded probe when the 5-day window is empty
+CELL_DEG = 0.05  # ~5 km: targets in one cell share a chip, so neighbours cost one fetch
+
 
 def _cfar(db: np.ndarray, valid: np.ndarray, k_sigma: float, window: int = 41) -> np.ndarray:
     lin = np.where(valid, 10 ** (np.nan_to_num(db, nan=-40.0) / 10), 0.0).astype(np.float32)
@@ -65,30 +70,87 @@ def detect_sar_vessels(vv_db: GeoRaster, invalid: np.ndarray, k_sigma: float = 6
     return out[:2000]
 
 
-def static_targets(targets: list[dict], acquired: datetime, max_scenes: int = 3, radius_m: float = 200.0) -> None:
-    """Mark targets that are also bright on earlier passes as static (in place)."""
-    from .cdse import CdseError, fetch_s1_vv_db, search
+def _prior_passes(bbox: list[float], acquired: datetime, max_scenes: int) -> list[str]:
+    """Earlier Sentinel-1 passes over `bbox`, newest first, with a hard cap on how far back we look.
 
-    for t in targets:
-        if t.get("static") is not None:
-            continue
-        half = 0.012
-        bbox = [t["lon"] - half, t["lat"] - half, t["lon"] + half, t["lat"] + half]
-        try:
-            scenes = search("sentinel-1-grd", bbox, acquired - timedelta(days=36), acquired - timedelta(hours=6))
-        except CdseError:
-            continue
-        # Most recent distinct passes first.
-        seen, prior = set(), []
-        for f in reversed(scenes):
+    Each pass costs a Copernicus fetch, so the search is bounded:
+      * only the last LOOKBACK_DAYS days are searched, then
+      * if that window holds no pass at all, a single extra query takes just the most recent scene
+        before it — one scene, not a walk back through the archive.
+    """
+    from .cdse import CdseError, search
+
+    def distinct(features: list[dict]) -> list[str]:
+        seen, out = set(), []
+        # Sort here rather than trusting the caller's order: the newest passes are the ones worth
+        # spending a fetch on.
+        for f in sorted(features, key=lambda f: f["properties"]["datetime"], reverse=True):
             key = f["properties"]["datetime"][:16]
-            if key not in seen:
-                seen.add(key)
-                prior.append(f["properties"]["datetime"])
-            if len(prior) >= max_scenes:
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(f["properties"]["datetime"])
+            if len(out) >= max_scenes:
                 break
-        hits = 0
+        return out
+
+    end = acquired - timedelta(hours=6)
+    try:
+        prior = distinct(search("sentinel-1-grd", bbox, acquired - timedelta(days=LOOKBACK_DAYS), end))
+        if prior:
+            return prior
+        # Nothing within the capped window: one bounded probe, and take only its most recent scan.
+        older = search("sentinel-1-grd", bbox, acquired - timedelta(days=ARCHIVE_PROBE_DAYS),
+                       acquired - timedelta(days=LOOKBACK_DAYS))
+        return distinct(older)[:1]
+    except CdseError:
+        return []
+
+
+def static_targets(targets: list[dict], acquired: datetime, max_scenes: int = 2, radius_m: float = 200.0,
+                   max_fetches: int = 12) -> None:
+    """Mark targets that are also bright on earlier passes as static (in place).
+
+    Targets are grouped into shared chips (CELL_DEG cells) so neighbouring detections cost one
+    Copernicus fetch between them instead of one each, and the whole call is capped at
+    `max_fetches` chips. Anything left unchecked keeps static=False and says so, rather than
+    holding the scan up for minutes.
+    """
+    from .cdse import CdseError, fetch_s1_vv_db
+
+    pending = [t for t in targets if t.get("static") is None]
+    if not pending:
+        return
+    groups: dict[tuple[int, int], list[dict]] = {}
+    for t in pending:
+        groups.setdefault((int(t["lat"] // CELL_DEG), int(t["lon"] // CELL_DEG)), []).append(t)
+
+    fetches = 0
+    probes = 0  # catalog searches are cheap but not free; bound them alongside the fetches
+    for members in groups.values():
+        for t in members:
+            t["priorPassesChecked"] = 0
+            t["priorPassesBright"] = 0
+            t["static"] = False
+        half = 0.012
+        bbox = [min(t["lon"] for t in members) - half, min(t["lat"] for t in members) - half,
+                max(t["lon"] for t in members) + half, max(t["lat"] for t in members) + half]
+        if fetches >= max_fetches or probes >= 2 * max_fetches:
+            for t in members:
+                t["staticCheck"] = "skipped (prior-pass budget spent)"
+            continue
+        probes += 1
+        prior = _prior_passes(bbox, acquired, max_scenes)
+        if not prior:
+            for t in members:
+                t["staticCheck"] = f"no earlier Sentinel-1 pass within {LOOKBACK_DAYS} days"
+            continue
+        hits = {id(t): 0 for t in members}
+        checked = 0
         for when in prior:
+            if fetches >= max_fetches:
+                break
+            fetches += 1  # count the attempt: a failing fetch costs time too
             try:
                 chip = fetch_s1_vv_db(bbox, when)
             except CdseError:
@@ -96,16 +158,21 @@ def static_targets(targets: list[dict], acquired: datetime, max_scenes: int = 3,
             valid = np.isfinite(chip.data)
             if valid.mean() < 0.5:
                 continue
-            col, row = chip.lonlat_to_pixel(t["lon"], t["lat"])
+            checked += 1
+            bright_all = _cfar(chip.data, valid, 6.0, window=21)
             r_px = max(1, int(round(radius_m / ((chip.pixel_size_m[0] + chip.pixel_size_m[1]) / 2))))
-            r0, c0 = int(row), int(col)
-            win = chip.data[max(0, r0 - r_px):r0 + r_px + 1, max(0, c0 - r_px):c0 + r_px + 1]
-            bright = _cfar(chip.data, valid, 6.0, window=21)[max(0, r0 - r_px):r0 + r_px + 1, max(0, c0 - r_px):c0 + r_px + 1]
-            if np.any(bright & (win > 0.0)):
-                hits += 1
-        t["priorPassesChecked"] = len(prior)
-        t["priorPassesBright"] = hits
-        # Speckle can hide a rock on one pass; ships almost never sit on the same 200 m spot on other days.
-        t["static"] = bool(prior) and hits / len(prior) >= 0.5
-        if t["static"]:
-            t["staticReason"] = f"bright at the same spot on {hits}/{len(prior)} earlier Sentinel-1 passes"
+            for t in members:
+                col, row = chip.lonlat_to_pixel(t["lon"], t["lat"])
+                r0, c0 = int(row), int(col)
+                sl = (slice(max(0, r0 - r_px), r0 + r_px + 1), slice(max(0, c0 - r_px), c0 + r_px + 1))
+                if np.any(bright_all[sl] & (chip.data[sl] > 0.0)):
+                    hits[id(t)] += 1
+        for t in members:
+            t["priorPassesChecked"] = checked
+            t["priorPassesBright"] = hits[id(t)]
+            # Speckle can hide a rock on one pass; ships almost never sit on the same 200 m spot on other days.
+            t["static"] = bool(checked) and hits[id(t)] / checked >= 0.5
+            if t["static"]:
+                t["staticReason"] = f"bright at the same spot on {hits[id(t)]}/{checked} earlier Sentinel-1 passes"
+            elif not checked:
+                t["staticCheck"] = "earlier passes unusable (no valid pixels)"

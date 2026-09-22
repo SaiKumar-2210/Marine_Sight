@@ -11,7 +11,7 @@ const LAYERS = [
 ];
 
 export default function LayerPanel({ vessels = [], onReset }) {
-  const { layers, setLayer, resetLayers, vesselFilter, toggleCategory } = useMapSettings();
+  const { mode, layers, setLayer, resetLayers, vesselFilter, toggleCategory } = useMapSettings();
   const { showRejected, setShowRejected } = useSpills();
   const counts = useMemo(() => vessels.reduce((acc, v) => { acc[v.category] = (acc[v.category] || 0) + 1; return acc; }, {}), [vessels]);
   return <section className="map-layers shadow-sm" aria-label="Map layers">
@@ -20,12 +20,17 @@ export default function LayerPanel({ vessels = [], onReset }) {
       <button className="icon-clear" onClick={() => { resetLayers(); setShowRejected(false); onReset?.(); }} title="Reset layers"><i className="bi bi-arrow-counterclockwise" /></button>
     </div>
     <div className="layer-list">
-      {LAYERS.map(([key, icon, label]) => (
-        <label className="form-check form-switch" key={key}>
-          <span><i className={`bi ${icon}`} />{label}</span>
-          <input className="form-check-input" type="checkbox" checked={layers[key]} onChange={e => setLayer(key, e.target.checked)} />
-        </label>
-      ))}
+      {LAYERS.map(([key, icon, label]) => {
+        // The SAR chip is a raster: in the Sentinel-2 view it would sit on top of the optical
+        // imagery, so it is held back until the operator leaves that view.
+        const suppressed = key === 'sarEvidence' && mode === 'sentinel2';
+        return <label className={`form-check form-switch ${suppressed ? 'suppressed' : ''}`} key={key}
+          title={suppressed ? 'Hidden while the Sentinel-2 basemap is shown' : undefined}>
+          <span><i className={`bi ${icon}`} />{label}{suppressed && <em className="layer-note">hidden over Sentinel-2</em>}</span>
+          <input className="form-check-input" type="checkbox" checked={layers[key] && !suppressed} disabled={suppressed}
+            onChange={e => setLayer(key, e.target.checked)} data-testid={`layer-${key}`} />
+        </label>;
+      })}
       <label className="form-check form-switch">
         <span><i className="bi bi-slash-circle" />Rejected look-alikes</span>
         <input className="form-check-input" type="checkbox" checked={showRejected} onChange={e => setShowRejected(e.target.checked)} data-testid="toggle-rejected" />

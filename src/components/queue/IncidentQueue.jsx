@@ -12,7 +12,7 @@ function culpritLabel(c) {
 }
 
 export default function IncidentQueue() {
-  const { spills, selectedId, setSelectedId, date, load } = useSpills();
+  const { spills, selectedId, setSelectedId, date, load, nearest, maxLookbackDays, setDate } = useSpills();
   const [filter, setFilter] = useState('all');
   const filtered = useMemo(() => spills.filter(s => filter === 'all' || (filter === 'high' ? s.severity === 'HIGH' : s.status === filter)), [spills, filter]);
   const counts = {
@@ -45,6 +45,13 @@ export default function IncidentQueue() {
         <div className="queue-empty" data-testid="queue-empty">
           No oil spills detected on {date}.
           {stats && <small>{stats.scenes} Sentinel-1 scene(s) over {stats.aois} areas · {stats.candidates} SAR candidate(s) · {stats.rejected} rejected as look-alikes</small>}
+          {/* The search back through earlier dates stops at maxLookbackDays — no endless walk. */}
+          {nearest
+            ? <button className="btn btn-sm btn-outline-light queue-nearest" data-testid="nearest-detection"
+              onClick={() => setDate(nearest.date)}>
+              Last detection: {nearest.date} ({nearest.spills}) <i className="bi bi-arrow-right-short" />
+            </button>
+            : <small data-testid="nearest-none">Nothing detected in the {maxLookbackDays} days up to {date} either — the lookback stops there.</small>}
         </div>
       )}
     </div>
