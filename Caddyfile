@@ -1,0 +1,3 @@
+marinesight.saikumar.co.in {
+    reverse_proxy app:3000
+}

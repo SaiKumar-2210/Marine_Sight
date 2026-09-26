@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw
 from shapely.geometry import box
 
 from .attribution import attribute
-from .cdse import CdseError, fetch_s1_vv_db, s1_scenes
+from .cdse import CdseError, _parse_iso, fetch_s1_vv_db, s1_scenes
 from .config import ML_ROOT, QUICKLOOK_DIR, UNET_WEIGHTS, VERIFIER_MODEL
 from .landmask import land_mask
 from .metocean import metocean_at
@@ -112,7 +112,7 @@ def _group_passes(scenes: list[dict]) -> list[dict]:
 
     passes: list[dict] = []
     for sc in sorted(scenes, key=lambda s: s["datetime"]):
-        t = datetime.fromisoformat(sc["datetime"].replace("Z", "+00:00"))
+        t = _parse_iso(sc["datetime"])
         last = passes[-1] if passes else None
         if last and last["platform"] == sc["platform"] and (t - last["_t_end"]).total_seconds() <= 90:
             last["footprint"] = unary_union([last["footprint"], sc["footprint"]])
@@ -176,7 +176,7 @@ def scan(date: str, aoi_ids: Optional[list[str]] = None, ais_db: Optional[str] =
             region = aoi_box.intersection(sc["footprint"])
             if region.is_empty or region.area < 0.02:
                 continue
-            acquired = datetime.fromisoformat(sc["datetime"].replace("Z", "+00:00"))
+            acquired = _parse_iso(sc["datetime"])
             spct = base_pct + span * si / len(scenes)
             emit("progress", stage="sar_fetch", aoi=aoi["id"], scene=sc["id"], pct=round(spct, 1),
                  message=f"Fetching Sentinel-1 VV backscatter ({sc['id'][:3]} {sc['datetime'][11:16]} UTC)")

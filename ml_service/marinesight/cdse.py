@@ -48,6 +48,30 @@ class CdseError(RuntimeError):
     pass
 
 
+def _parse_iso(s: str) -> datetime:
+    """Parse an ISO 8601 datetime string robustly on Python 3.10+.
+
+    ``datetime.fromisoformat`` in Python <3.11 rejects the ``Z`` suffix and
+    chokes on fractional-second strings whose digit count is not 3 or 6 (e.g.
+    ``".01"``).  The Copernicus catalog returns timestamps with varying
+    precision, so we normalise them before parsing.
+    """
+    import re
+
+    s = s.strip()
+    # Replace trailing Z with +00:00 (Python 3.10 doesn't accept Z).
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+
+    # Normalise fractional seconds to exactly 6 digits (microseconds).
+    m = re.match(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d+)(.*)", s)
+    if m:
+        frac = m.group(2).ljust(6, "0")[:6]
+        s = f"{m.group(1)}.{frac}{m.group(3)}"
+
+    return datetime.fromisoformat(s)
+
+
 _token_lock = threading.Lock()
 _token = {"value": None, "expires_at": 0.0}
 _session = requests.Session()
@@ -179,7 +203,7 @@ def fetch_s1_vv_db(bbox: list[float], acquired: str, pix: float = PIX_DEG) -> Ge
     `acquired` is the scene's ISO datetime; a ±2 minute window isolates that pass.
     """
     bbox = snap_bbox(bbox, pix)
-    t = datetime.fromisoformat(acquired.replace("Z", "+00:00"))
+    t = _parse_iso(acquired)
     data_filter = {
         "timeRange": {"from": _iso(t - timedelta(minutes=2)), "to": _iso(t + timedelta(minutes=2))},
         "acquisitionMode": "IW",
@@ -213,7 +237,7 @@ def best_s2_scene(bbox: list[float], around: datetime, max_hours: float = 36.0) 
         cc = p.get("eo:cloud_cover")
         if cc is not None and cc > 80:
             continue
-        t = datetime.fromisoformat(p["datetime"].replace("Z", "+00:00"))
+        t = _parse_iso(p["datetime"])
         dt_h = (t - around).total_seconds() / 3600.0
         score = abs(dt_h) + (cc or 0) * 0.1
         if best is None or score < best["score"]:
@@ -228,7 +252,7 @@ def fetch_s2(bbox: list[float], acquired: str, max_px: int = 512) -> GeoRaster:
     pix = max(pix, 0.0001)  # never finer than ~10 m
     bbox = snap_bbox(bbox, pix)
     h, wpx = bbox_shape(bbox, pix)
-    t = datetime.fromisoformat(acquired.replace("Z", "+00:00"))
+    t = _parse_iso(acquired)
     key = {"c": "s2", "bbox": [round(v, 7) for v in bbox], "t": acquired, "px": pix}
     path = _cache_path("s2", key)
     if path.exists():

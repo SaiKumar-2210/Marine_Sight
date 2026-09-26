@@ -9,7 +9,7 @@ const S1_ARCHIVE_START = '2014-10-03';
 export const MAX_LOOKBACK_DAYS = 5;
 // Applying the date this long after the last keystroke keeps a run through the calendar from
 // queueing a pipeline run for every date it passes over.
-const DATE_DEBOUNCE_MS = 500;
+const DATE_DEBOUNCE_MS = 1200;
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 const yesterdayUtc = () => new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -146,6 +146,15 @@ export function SpillProvider({ children }) {
     setDraftDate(d);
     if (!dateProblem(d)) setDateError(null);
   }, []);
+  /** Bypass the debounce — for explicit actions like arrow buttons or clicking the nearest-date link. */
+  const commitDate = useCallback(d => {
+    if (!d) return;
+    const problem = dateProblem(d);
+    setDateError(problem);
+    if (problem) return;
+    setDraftDate(d);
+    setDateState(d);
+  }, []);
   const forceRescan = useCallback(async () => {
     if (!date) return;
     try {
@@ -158,9 +167,9 @@ export function SpillProvider({ children }) {
 
   const selected = spills.find(s => s.id === selectedId) || null;
   const value = useMemo(() => ({
-    date, draftDate, setDate, dateError, spills, load, selectedId, setSelectedId, selected, detail,
+    date, draftDate, setDate, commitDate, dateError, spills, load, selectedId, setSelectedId, selected, detail,
     showRejected, setShowRejected, scanIndex, forceRescan, nearest, maxLookbackDays: MAX_LOOKBACK_DAYS
-  }), [date, draftDate, setDate, dateError, spills, load, selectedId, selected, detail, showRejected, scanIndex, forceRescan, nearest]);
+  }), [date, draftDate, setDate, commitDate, dateError, spills, load, selectedId, selected, detail, showRejected, scanIndex, forceRescan, nearest]);
   return <SpillContext.Provider value={value}>{children}</SpillContext.Provider>;
 }
 
